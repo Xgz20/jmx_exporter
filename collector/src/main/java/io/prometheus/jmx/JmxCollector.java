@@ -122,7 +122,8 @@ public class JmxCollector extends Collector implements Collector.Describable {
 
         try {
           Map<String, Object> newYamlConfig = (Map<String, Object>)new Yaml().load(fr);
-          config = loadConfig(newYamlConfig);
+            // 加载并解析JMX Exporter相关配置（例如，采集规则、黑白名单等）
+            config = loadConfig(newYamlConfig);
           config.lastUpdate = configFile.lastModified();
           configReloadSuccess.inc();
         } catch (Exception e) {
@@ -403,8 +404,10 @@ public class JmxCollector extends Collector implements Collector.Describable {
           // JmxScraper.MBeanReceiver is only called from one thread,
           // so there's no race here.
           mfs = new MetricFamilySamples(sample.name, type, help, new ArrayList<MetricFamilySamples.Sample>());
+          // 将采集的信息放到这个Map中，后面就是从这个Map将数据输出给Prometheus
           metricFamilySamplesMap.put(sample.name, mfs);
         }
+        // 已经有这个属性了，则进行更新
         SampleKey sampleKey = SampleKey.of(sample);
         boolean exists = sampleKeys.contains(sampleKey);
         if (exists) {
@@ -491,6 +494,7 @@ public class JmxCollector extends Collector implements Collector.Describable {
         String beanName = domain + angleBrackets(beanProperties.toString()) + angleBrackets(attrKeys.toString());
 
         // Build the HELP string from the bean metadata.
+        // 拼接的规则，也是我们在JMX Exporter配置文件中定义规则时要遵守的约定
         String help = domain + ":name=" + beanProperties.get("name") + ",type=" + beanProperties.get("type") + ",attribute=" + attrName;
         // Add the attrDescription to the HELP if it exists and is useful.
         if (attrDescription != null && !attrDescription.equals(attrName)) {
@@ -499,6 +503,7 @@ public class JmxCollector extends Collector implements Collector.Describable {
 
         MatchedRule matchedRule = MatchedRule.unmatched();
 
+        // 规则匹配逻辑，根据配置文件中定义的规则来筛选哪些MBean属性要被采集
         for (Rule rule : config.rules) {
           // Rules with bean values cannot be properly cached (only the value from the first scrape will be cached).
           // If caching for the rule is enabled, replace the value with a dummy <cache> to avoid caching different values at different times.
@@ -618,6 +623,7 @@ public class JmxCollector extends Collector implements Collector.Describable {
 
         // Add to samples.
         LOGGER.fine("add metric sample: " + matchedRule.name + " " + matchedRule.labelNames + " " + matchedRule.labelValues + " " + value.doubleValue());
+        // 添加采集到的指标样例
         addSample(new MetricFamilySamples.Sample(matchedRule.name, matchedRule.labelNames, matchedRule.labelValues, value.doubleValue()), matchedRule.type, matchedRule.help);
       }
 
@@ -626,10 +632,12 @@ public class JmxCollector extends Collector implements Collector.Describable {
   public List<MetricFamilySamples> collect() {
       // Take a reference to the current config and collect with this one
       // (to avoid race conditions in case another thread reloads the config in the meantime)
+      // 1、获取最新的JMX Exporter配置（config.yaml）
       Config config = getLatestConfig();
 
       MatchedRulesCache.StalenessTracker stalenessTracker = new MatchedRulesCache.StalenessTracker();
       Receiver receiver = new Receiver(config, stalenessTracker);
+      // 2、构建JmxScraper对象，这里是有缓存的概念
       JmxScraper scraper = new JmxScraper(config.jmxUrl, config.username, config.password, config.ssl,
               config.whitelistObjectNames, config.blacklistObjectNames, receiver, jmxMBeanPropertyCache);
       long start = System.nanoTime();
@@ -639,6 +647,7 @@ public class JmxCollector extends Collector implements Collector.Describable {
         throw new IllegalStateException("JMXCollector waiting for startDelaySeconds");
       }
       try {
+        // 3、开始采集
         scraper.doScrape();
       } catch (Exception e) {
         error = 1;
@@ -648,8 +657,11 @@ public class JmxCollector extends Collector implements Collector.Describable {
       }
       config.rulesCache.evictStaleEntries(stalenessTracker);
 
+      // 4、添加采集操作的一些统计信息（例如，采集的周期、失败的样例数目、被缓存的MBean的数目）
       List<MetricFamilySamples> mfsList = new ArrayList<MetricFamilySamples>();
+      // 所有采集的指标数据
       mfsList.addAll(receiver.metricFamilySamplesMap.values());
+      // 下面是输出关于采集的统计信息
       List<MetricFamilySamples.Sample> samples = new ArrayList<MetricFamilySamples.Sample>();
       samples.add(new MetricFamilySamples.Sample(
           "jmx_scrape_duration_seconds", new ArrayList<String>(), new ArrayList<String>(), (System.nanoTime() - start) / 1.0E9));

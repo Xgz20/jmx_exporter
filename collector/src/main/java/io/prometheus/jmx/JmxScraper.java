@@ -77,6 +77,7 @@ class JmxScraper {
     public void doScrape() throws Exception {
         MBeanServerConnection beanConn;
         JMXConnector jmxc = null;
+        // 检查配置文件中是否有指定jmxUrl，如果指定了就使用指定的jmxUrl建立MBeanServerConnection，否则就使用默认的
         if (jmxUrl.isEmpty()) {
           beanConn = ManagementFactory.getPlatformMBeanServer();
         } else {
@@ -97,13 +98,16 @@ class JmxScraper {
         }
         try {
             // Query MBean names, see #89 for reasons queryMBeans() is used instead of queryNames()
+            // 用于存放查询到的所有MBean的名称
             Set<ObjectName> mBeanNames = new HashSet<ObjectName>();
+            // 先添加白名单中的MBean
             for (ObjectName name : whitelistObjectNames) {
                 for (ObjectInstance instance : beanConn.queryMBeans(name, null)) {
                     mBeanNames.add(instance.getObjectName());
                 }
             }
 
+            // 黑名单过滤
             for (ObjectName name : blacklistObjectNames) {
                 for (ObjectInstance instance : beanConn.queryMBeans(name, null)) {
                     mBeanNames.remove(instance.getObjectName());
@@ -111,14 +115,18 @@ class JmxScraper {
             }
 
             // Now that we have *only* the whitelisted mBeans, remove any old ones from the cache:
+            // 缓存更新，以最新获取到的MBean集合为准
             jmxMBeanPropertyCache.onlyKeepMBeans(mBeanNames);
 
+            // 循环调用scrapeBean方法，根据MBean的名称获取详细属性
             for (ObjectName objectName : mBeanNames) {
                 long start = System.nanoTime();
+                // 针对1个MBean进行采集
                 scrapeBean(beanConn, objectName);
                 logger.fine("TIME: " + (System.nanoTime() - start) + " ns for " + objectName.toString());
             }
         } finally {
+          // 关闭连接
           if (jmxc != null) {
             jmxc.close();
           }
@@ -128,6 +136,7 @@ class JmxScraper {
     private void scrapeBean(MBeanServerConnection beanConn, ObjectName mbeanName) {
         MBeanInfo info;
         try {
+          // 获取MBean详情
           info = beanConn.getMBeanInfo(mbeanName);
         } catch (IOException e) {
           logScrape(mbeanName.toString(), "getMBeanInfo Fail: " + e);
@@ -136,8 +145,10 @@ class JmxScraper {
           logScrape(mbeanName.toString(), "getMBeanInfo Fail: " + e);
           return;
         }
+        // 得到这个MBean的所有属性信息（MBeanAttributeInfo中并没有实际的属性值，它包含MBean的属性名称、属性类型、属性描述等）
         MBeanAttributeInfo[] attrInfos = info.getAttributes();
 
+        // 这里又进行了一次过滤，因为MBean的有些属性并不是可读的（例如，定义MBean的时候这个属性getter方法并不是public修饰的），对于这部分属性没法采集
         Map<String, MBeanAttributeInfo> name2AttrInfo = new LinkedHashMap<String, MBeanAttributeInfo>();
         for (int idx = 0; idx < attrInfos.length; ++idx) {
             MBeanAttributeInfo attr = attrInfos[idx];
@@ -150,6 +161,7 @@ class JmxScraper {
         final AttributeList attributes;
         try {
             // bulk load all attributes
+            // 根据MBean的名称和属性名称获取所有的属性（Attribute中包含实际的属性值）
             attributes = beanConn.getAttributes(mbeanName, name2AttrInfo.keySet().toArray(new String[0]));
             if (attributes == null) {
                 logScrape(mbeanName.toString(), "getAttributes Fail: attributes are null");
@@ -157,14 +169,17 @@ class JmxScraper {
             }
         } catch (Exception e) {
             // couldn't get them all in one go, try them 1 by 1
+            // 不能批量处理（批量处理出现了异常），则对属性一个一个处理（这种性能可能会差些，因为在for循环里多次调用MBeanServerConnection的方法）
             processAttributesOneByOne(beanConn, mbeanName, name2AttrInfo);
             return;
         }
+        // 将MBeanAttributeInfo和Attribute组合在一块，就是一个属性完整的信息（包括属性名称、属性类型、属性描述、属性值）
         for (Object attributeObj : attributes.asList()) {
             if (Attribute.class.isInstance(attributeObj)) {
                 Attribute attribute = (Attribute)(attributeObj);
                 MBeanAttributeInfo attr = name2AttrInfo.get(attribute.getName());
                 logScrape(mbeanName, attr, "process");
+                // 处理MBean的一个属性（把MBean的domain、配置信息、属性信息进行整合处理）
                 processBeanValue(
                         mbeanName.getDomain(),
                         jmxMBeanPropertyCache.getKeyPropertyList(mbeanName),
@@ -223,6 +238,7 @@ class JmxScraper {
                 value = ((java.util.Date) value).getTime() / 1000.0;
             }
             logScrape(domain + beanProperties + attrName, value.toString());
+            // 下面方法会对MBean的这一个属性进行拼接处理，得到最终的采样数据
             this.receiver.recordBean(
                     domain,
                     beanProperties,
@@ -302,7 +318,7 @@ class JmxScraper {
                             // Skip appending 'value' to the name
                             attrNames = attrKeys;
                             name = attrName;
-                        } 
+                        }
                         processBeanValue(
                             domain,
                             l2s,
@@ -366,7 +382,7 @@ class JmxScraper {
             String attrDescription,
             Object value) {
             System.out.println(domain +
-                               beanProperties + 
+                               beanProperties +
                                attrKeys +
                                attrName +
                                ": " + value);

@@ -30,12 +30,17 @@ public class JavaAgent {
         String host = "0.0.0.0";
 
         try {
+            // 解析命令行参数，主要得到JMX Exporter对外开放的服务地址IP、端口、以及yaml配置文件等
             Config config = parseConfig(agentArgument, host);
 
             new BuildInfoCollector().register();
+            // 创建JMX收集器实例对象，并注册到收集器注册表CollectorRegistry
             new JmxCollector(new File(config.file), JmxCollector.Mode.AGENT).register();
+            // 注册Prometheus提供的通用的收集器，例如HotSpot虚拟机的内存信息、线程信息、GC信息等
             DefaultExports.initialize();
 
+            // 创建HTTP Server，这个Server就是提供服务接口供Prometheus调用的
+            // 这个Server是Prometheus的子工程client_java提供的
             server =
                     new HTTPServerFactory()
                             .createHTTPServer(
